@@ -6,11 +6,12 @@
 #                                                                         #
 # Author: Michal Pawlina (michal.pawlina@amdocs.com)                      #
 #                                                                         #
-# Version 1.1                                                             #
+# Version 1.2                                                             #
 #                                                                         #
 # Changes:		                                                  #
 #  v1.0 - Initial release                                                 #
 #  v1.1 - Adding sendmail support for notification mails                  #
+#  v1.2 - Added GitHub repo                                               #
 #                                                                         #
 ###########################################################################
 
