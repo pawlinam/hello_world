@@ -1,0 +1,1679 @@
+/*****************************************************************************************
+        MODULO  ADINFA
+******************************************************************************************
+----------------------------------------------------------------------------------------------
+| AUTORE        | DATA     |IDMOD    | MODIFICHE                                             |
+----------------|----------|---------|--------------------------------------------------------
+|A.Belardinelli | 20/06/06 |         | Creato                                                |
+----------------|----------|---------|--------------------------------------------------------
+|P.Sagaria  | 20/06/06 |IDMOD_TMP| MODIFICA TMP per TEST                         |      
+----------------|----------|---------|--------------------------------------------------------
+|P.Sagaria  | 20/06/06 |00001    | Il TypeIdNrc viene preso dal File di Configurazione   | 
+----------------|----------|---------|--------------------------------------------------------
+|P.Sagaria  | 18/09/06 |00002    |Gestione Account DISC_DONE e ANNULLATI             |      
+----------------|----------|---------|--------------------------------------------------------
+|P.Sagaria  | 26/09/06 |00003    |Modifica per il recupero degli account DISC_REQ:       |
+|       |      |         |La Tabella CRM_BIL_ACCOUNT_ADINFA non viene piu'creata | 
+|       |      |         |Aggiunta a tale tabella i campi DISC_REQ e SERVER_ID   |
+|       |      |         |X_FATTURA_A_PAGAMENTO.                     |
+----------------|----------|---------|--------------------------------------------------------
+|P.Sagaria  | 23/10/06 |00004    |Gestione Ripartenza,Aggiunta Transazione API,      |      
+|       |      |         |Creati Semafori propri per ADINFA              |
+----------------|----------|---------|--------------------------------------------------------
+|P.Sagaria  | 06/12/06 |00005    |Anomalia allineamento campo DISC_REQ in Ripartenza     |  
+----------------|----------|---------|--------------------------------------------------------
+|P.Sagaria  | 08/01/07 |00006    |Restituzione codici di ritorno adeguati            |
+----------------|----------|---------|--------------------------------------------------------
+|P.Sagaria  | 02/04/07 |00007    |Modifica per Non inserire spese di spedizione a ckienti|
+|       |      |         |morosi                             |
+----------------|----------|---------|--------------------------------------------------------
+|M.Mogliazza    | 30/11/10 |00008    |Eliminate hint RULE dalle query                        |
+|---------------|----------|---------|--------------------------------------------------------
+| F.Rallo       |25/02/2011|  00009  | NCM_471 Copia crm_mese_report_ba su contabilizzatore  |
+|---------------|----------|---------|-------------------------------------------------------|
+| *** MODIFICARE SEMPRE ID_MOD DEFINITA SOTTO! ***                                           |
+|--------------------------------------------------------------------------------------------|
+*/
+#define STR_LANCIO "STARTER CI\\\$ADINFA\\\$utente\\\$_\\\$numero-blocchi\\\$data-nrc\\\$CUST_ID=server-id\\\$ID_LANCIO=id-lancio"
+#define ID_MOD "00009"
+
+
+#include "ADINFA.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <ctype.h>
+#include <time.h>
+#include <errno.h>
+#include <limits.h>
+#include <unistd.h>
+
+#include <LibUtils.h>
+#include <InfrCommon.h>
+#include <BtcConsts.h>
+#include <strings.h>
+#include <sqlca.h>
+#include <sys/reg.h>
+#include <stdarg.h>
+#include <BtcUtils.h>
+#include <math.h>
+#include <sys/wait.h>
+#include <signal.h>
+/**#include <SemaInit.h>**/      /** IDMOD 00004 **/ 
+#include <sys/sem.h>
+#include <CreamARB.h>
+
+#include <abp_serv_inst_charge_api.h>
+
+
+/***
+     Costanti 
+                ***/
+
+#define CURRENT_VERSION_MODULE      "1.0.0"
+#define MODULE_NAME         "ADINFA"
+#define SECTION_CONFIG_NAME     "ADINFA"
+
+
+/***
+     Variabili Globali
+                ***/
+char    strCodeElabBatch[LEN_CODE_ELAB+1];
+char    strContDb[LEN_DBCONN+1]; /** IDMOD 00009: variabile per connessione **/
+char    strCustDb[LEN_DBCONN+1];
+char    strCatDb[LEN_DBCONN+1];
+char    sDBCfgName[LEN_NAME_FILE_CONFIG+1];
+char    sLOGCfgName[LEN_NAME_FILE_CONFIG+1];
+char    sPathCsvFile[LEN_NAME_FILE_CONFIG+1];
+char    sDataEstrazione[LEN_DATA_FORMATO_YYYYMMDD+1];
+char    sMeseEstrazione[2+1];                   /** IDMOD 00004 **/
+char    sMeseInserimento[2+1];                  /** IDMOD 00004 **/
+char    strChangeDate[LEN_DATA_FORMATO_YYYYMMDD+1];
+char    strDataNrc[LEN_DATA_FORMATO_YYYYMMDD+1];
+char    strDataNrcNew[LEN_DATA_FORMATO_YYYYMMDD+1];     /** IDMOD 00002 **/
+char    strDataNrcLeast[LEN_DATA_FORMATO_YYYYMMDD+1];
+char    strDataNrcInput[LEN_DATA_FORMATO_YYYYMMDD+1];
+char    strOrderNum[30+1];
+char    strSubscrNo[10+1];
+char    strExternalIdSi[144+1];
+char    strInactiveDate[LEN_DATA_FORMATO_YYYYMMDD+1];
+char    strlsysdate[LEN_DATALOG_INT+1];
+char    strlsysdate_test[LEN_DATALOG_INT+1];
+char    strlseqppp[LEN_SEQUENCE+1];
+char    strUserid[LEN_USERID+1];
+char    strAccountNo[10+1];
+char    strImporto[14+1];
+char    strTypeIdNrc[10+1];
+char    strXref3[20+1];
+char    strSapId[14+1];
+char    strRowId[50+1];
+char    strFlagMiscMsg[10];
+char    strFlagLogSql[10];
+char    strNumUpdate[10+1];
+char    strNomeTransaction[LEN_TRANSACTION+1];
+char    strOracleErr[300]; 
+int     intNumCommit=0;
+int     intRipartenza=0;        /** IDMOD 00004 **/
+int     intRecAggiornati=1;
+int     iRC=0;
+int     intNumLog=0;
+int     iNumBlocchi=0;
+int     intCustId=0;
+int     intCheckPadre=-1;
+int     intBatchAttivi=0;
+int     intCountAdinfa=0;
+char    strPrimoRec[20];
+char    strUltimoRec[20];
+char    strUltimoRecControllo[20];
+char    strNumBloc[6];
+char    strCustId[LEN_CUSTOMERID+1];
+char    strArbCustSect[LEN_CUSTOMERID+1];
+char    strIdLancio[LEN_IDLANCIO+1];
+char    strActive[2+1];
+int     intDisconnessi;
+int     intCountAccStatus=0;        /** IDMOD : 00007 **/
+int     intSumBalanceDue=0;     /** IDMOD : 00007 **/
+int     intAnnullati=0;         /** IDMOD : 00002 **/
+int     intPresente;
+int     intFatturato;
+int     intSIAttive;
+int     intActive;
+int     msgno=0;
+int     severity=0;
+int     type=0;
+
+USER_DATA             accessoDb;
+ABP_SERV_INST_CHARGE    sic;
+
+int logError(char *,char *,char *,char *, char *, int, char *);
+/************************************************************************************
+                             Global Functions
+ ***********************************************************************************/
+void setsema( int value )
+{
+    int id;
+    struct sembuf operations;
+    int retval;
+    int indice;
+    
+    if (intCustId != 0)
+    {
+        indice = intCustId - 3;
+    }
+    else
+    {
+            indice = 5;
+    }
+    /*  ID= identificativo della risorsa acquisita 
+        KEY  : identificativo della facility
+        6    : numero di semafori
+        0666 : definisce le modalita' di accesso alla facility per tutti gli utenti che vi possono accedere
+    */
+    id = semget(KEY, 6, 0666);
+    if(id < 0)
+    {
+        fprintf(stderr, "Program ADINFA cannot find semaphore, exiting.\n");
+        exit(30);
+    }
+
+    /* valorizzo la struttura da passare a semop */
+    operations.sem_num = indice;  /* numero di semaforo a cui ci si riferisce */
+    operations.sem_op = value;    /* operazione da eseguire (+1, 0 , -1) */
+    operations.sem_flg = 0;       /* flag */
+    
+    retval = semop(id, &operations, 1);
+    if(retval != 0)
+    {
+        fprintf(stderr, "Program  ADINFA cannot add %d to semaphore %d, exiting.\n", value,indice);
+        exit(30);
+    }
+
+}
+    
+void set_close_to_promo(void)
+{
+    static const char sProcedureName[]="set_close_to_promo";
+    /****  Impostazione stato del batch a CLOSE  ****/
+    EXEC SQL AT :strCatDb
+    UPDATE  crm_bil_con_view_elab_batch
+    SET     CODE_STATO_BATCH = :strBtcClosing
+    WHERE   CODE_ELAB = :strCodeElabBatch;
+
+    /* Controllo errore Oracle e stampa della descrizione a video o sul File di Log se questo e'stato aperto */
+    if (checkFileOracleErr(strCatDb,"Update CRM_BIL_CON_VIEW_ELAB_BATCH allo stato %s WHERE CODE_ELAB = %s \n",strBtcClosing,strCodeElabBatch) ==CODE_ERR)
+    {
+        /* Rollback e chiusura della connessione sul DB strMedDb */
+        PrintLog(DEBUG_INFO, (char *) sProcedureName, "ROLLBACK :[%s]",strCatDb );
+        rollbackDb (strCatDb,CLOSE_DB) ;
+        exit(EXIT_SQL_ERROR);
+    }
+
+    commitDb(strCatDb,CLOSE_DB);
+
+    /* Solo per i processi figli */
+    if(intCheckPadre == 0)
+    setsema(1);
+}
+
+void CreaNRC(ABP_SERV_INST_CHARGE abu, char *strDataNrc, char *strExternalIdSi, char *strOrderNum, char *sDataEstrazione)
+{
+    static const char sProcedureName[]="CreaNRC";
+
+    PrintLog(DEBUG_INFO, (char *) sProcedureName, "---------------------------------------------");
+    PrintLog(DEBUG_INFO, (char *) sProcedureName, "strDataNrc   [%s]",strDataNrc);
+    PrintLog(DEBUG_INFO, (char *) sProcedureName, "strExternalIdSi  [%s]",strExternalIdSi);
+    PrintLog(DEBUG_INFO, (char *) sProcedureName, "strOrderNum  [%s]",strOrderNum);
+    PrintLog(DEBUG_INFO, (char *) sProcedureName, "sDataEstrazione  [%s]",sDataEstrazione);
+    PrintLog(DEBUG_INFO, (char *) sProcedureName, "strTypeIdNrc [%s]",strTypeIdNrc);
+    PrintLog(DEBUG_INFO, (char *) sProcedureName, "---------------------------------------------");
+
+    set_abp_serv_inst_charge_bill_ref_no(abu, 0);
+
+    set_abp_serv_inst_charge_bill_ref_resets(abu, 0);
+    
+    set_abp_serv_inst_charge_currency_code(abu,(short) 9);
+    
+    set_abp_serv_inst_charge_current_installment(abu, (unsigned char) 0);
+    
+    set_abp_serv_inst_charge_effective_date(abu, strDataNrc);
+    
+    set_abp_serv_inst_charge_external_account_no(abu, strOrderNum);
+    
+    set_abp_serv_inst_charge_external_account_no_type(abu, 1);
+    
+    set_abp_serv_inst_charge_external_id(abu, strExternalIdSi);
+    
+    set_abp_serv_inst_charge_external_id_type(abu, 10);
+    
+    set_abp_serv_inst_charge_no_bill(abu, 0);
+    
+    set_abp_serv_inst_charge_open_item_id(abu, 1);
+    
+    set_abp_serv_inst_charge_rate_time(abu, sDataEstrazione);
+    
+    set_abp_serv_inst_charge_request_status(abu, 1);
+    
+    set_abp_serv_inst_charge_total_installments(abu, (unsigned char) 0);
+    
+    set_abp_serv_inst_charge_transact_date(abu, sDataEstrazione );
+    
+    set_abp_serv_inst_charge_transact_status(abu,"CUR");
+    
+    set_abp_serv_inst_charge_type_id_nrc(abu,atoi(strTypeIdNrc));
+
+
+    /*  IDMOD 00002 Settato a 1 per indicare che l'nrc e' stato inserito con
+        l'api che lo lega al contratto insert_abp_serv_inst_charge
+        set_abp_serv_inst_charge_sales_id(abu, "1"); */
+
+}
+
+/***
+     Prototipi funzioni
+                ***/
+
+int ElaboraInvioFatture();
+int CalcolaBlocchi();
+int Init(int , char **);
+
+/*************************************************************************
+**
+**   ElaboraInvioFatture: processo figlio
+**
+*************************************************************************/
+int ElaboraInvioFatture() 
+{
+    static const char sProcedureName[]="ElaboraInvioFatture";
+    char    sBuffer[LEN_WRK_BUFFER];
+    char    sNomeFileFlusso[LEN_WRK_BUFFER];
+    int     intTotaleLetti=0;
+    int     intRecorElaboratiOK=0;
+    int     intCountDisc=0;
+
+    bzero(sBuffer,sizeof(sBuffer));
+    bzero(sNomeFileFlusso,sizeof(sNomeFileFlusso));
+    
+    EXEC SQL DECLARE CURS_INVIO_FATTURE CURSOR FOR   
+    SELECT  /* IDMOD 00008 */
+        b.order_num,b.account_no
+    FROM    CRM_BIL_ACCOUNT_ADINFA b
+    WHERE   b.account_no between :strPrimoRec and :strUltimoRec
+    AND     x_fattura_a_pagamento = 'SI'  /** IDMOD 00004 **/
+    ;
+    
+    /* Apriamo il cursore */
+    EXEC SQL AT :strCustDb OPEN CURS_INVIO_FATTURE;
+
+    if (checkFileOracleErr(strCustDb, "Figlio:Apertura del cursore CURS_INVIO_FATTURE fallita") != CODE_OK)
+    {
+        /*PrintLog(ERROR, (char *) sProcedureName, "Apertura del cursore CURS_INVIO_FATTURE fallita");
+        logError(strOrderNum,strAccountNo,strDataNrc,sDataEstrazione,sqlca.sqlerrm.sqlerrmc,intCustId,strlsysdate);*/
+        return CODE_ERR;
+    }
+
+    for(;;)
+    {
+        
+        bzero(strActive,sizeof(strActive));
+        bzero(strInactiveDate,sizeof(strInactiveDate));
+        PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "strInactiveDate '%s'" , strInactiveDate);
+        bzero(strDataNrc,sizeof(strDataNrc));
+        strcpy(strDataNrc,strDataNrcInput);
+        bzero(strAccountNo,sizeof(strAccountNo));
+        bzero(strOrderNum,sizeof(strOrderNum));
+ 
+        /*  Inizializzazione transazione Customer Kenan BP */
+        if  (ABP_STATUS_OK != abp_begin_transaction(cus_dbHandle , strNomeTransaction))
+        {
+            /******* Tracciamento Errore su File di Log ******/
+            PrintLog(ERROR, "ADINFA", "Errore Inizializzazione Transazione sul Customer Db HANDLE Kenan");
+            /* Imposto il return al Main */
+            return (CODE_ERR_ARBOR);
+        } /* Fine Apertura Transazione su Arbor */
+
+        PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "*********** BZERO ***************" );
+        PrintLog(DEBUG_INFO, "ADINFA", "Eseguito abp_begin_transaction");       
+        PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "strDataNrc '%s'" , strDataNrc);
+        PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "strInactiveDate '%s'" , strInactiveDate);
+        PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "strDataNrcInput '%s'" , strDataNrcInput);
+        PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "strDataNrcNew '%s'" , strDataNrcNew);
+        PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "strDataNrcLeast '%s'" , strDataNrcLeast);
+        PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "strOrderNum [%s]" , strOrderNum);
+        PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "strAccountNo [%s]" , strAccountNo);
+        PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "strExternalIdSi [%s]" , strExternalIdSi);
+        PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "strDataNrc [%s]" , strDataNrc);
+        PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "sDataEstrazione [%s]" , sDataEstrazione);
+        PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "**************************" );
+
+        EXEC SQL AT :strCustDb 
+        FETCH CURS_INVIO_FATTURE
+        INTO    :strOrderNum,   
+                :strAccountNo;
+           
+        if ( (sqlca.sqlcode == 100) || (sqlca.sqlcode == 1403))
+        {
+            PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "NON CI SONO ALTRI RECORD DA ELABORARE!!!" );
+            break;
+        }
+        else
+        {
+            if(checkFileOracleErr(strCustDb, "Figlio:Fetch del cursore CURS_INVIO_FATTURE fallita") != CODE_OK)
+            {
+                abp_roll_back_transaction(cus_dbHandle,strNomeTransaction); /** IDMOD 00004 **/
+                PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "ROLLBACK API TRANSACTION :[%s]",strNomeTransaction );
+                logError(strOrderNum,strAccountNo,strDataNrc,sDataEstrazione,sqlca.sqlerrm.sqlerrmc,intCustId,strlsysdate);
+                return CODE_ERR;
+            }
+        }
+        
+        intTotaleLetti++;
+
+        trim(strOrderNum);
+        trim(strAccountNo);
+
+        /* Verifica se il campo account_status=-2, cioe' se l'account e' DISC_DONE */
+        intDisconnessi = 0;        /* AGNESE OK */
+        
+        EXEC SQL AT :strCustDb 
+        SELECT  COUNT(1)
+        INTO    :intDisconnessi
+        FROM    CMF
+        WHERE   ACCOUNT_NO = :strAccountNo
+        AND     ACCOUNT_STATUS = -2;
+
+        if(checkFileOracleErr(strCustDb, "SELECT COUNT(1) FROM CMF WHERE ACCOUNT_NO= '%s' AND ACCOUNT_STATUS=-2",strAccountNo) != CODE_OK)
+        {
+            abp_roll_back_transaction(cus_dbHandle,strNomeTransaction); /** IDMOD 00004 **/
+            PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "ROLLBACK API TRANSACTION :[%s]",strNomeTransaction );
+            logError(strOrderNum,strAccountNo,strDataNrc,sDataEstrazione,sqlca.sqlerrm.sqlerrmc,intCustId,strlsysdate);
+            continue;
+        }
+
+        /* Se il risultato della count e' diverso da 0 non e' possibile inserire il contributo per l'invio della fattura */
+        if( intDisconnessi != 0 )
+        {
+            PrintLog(WARNING, "ElaboraInvioFatture", "ACCOUNT DISC_DONE: Non e' possibile inserire il contributo per l'invio della fattura per l'account_no '%s'" , strAccountNo);      /** IDMOD :00002 **/
+            abp_roll_back_transaction(cus_dbHandle,strNomeTransaction); /** IDMOD 00004 **/
+            PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "ROLLBACK API TRANSACTION :[%s]",strNomeTransaction );
+            logError(strOrderNum,strAccountNo,strDataNrc,sDataEstrazione,"ACCOUNT DISC_DONE: Non e' possibile inserire il contributo per l'invio della fattura",intCustId,strlsysdate);     /** IDMOD :00002 **/
+            continue;
+        }
+        /** INIZIO IDMOD 00007 **/
+        else
+        {   
+            intCountAccStatus = 0;
+
+            /** Verifica se account status > 3 **/
+            EXEC SQL AT :strCustDb 
+            SELECT  COUNT(1)
+            INTO    :intCountAccStatus
+            FROM    CMF
+            WHERE   ACCOUNT_NO = :strAccountNo
+            AND     ACCOUNT_STATUS > 3
+            ;
+    
+            if(checkFileOracleErr(strCustDb, "SELECT COUNT(1) FROM CMF WHERE ACCOUNT_NO= '%s' AND ACCOUNT_STATUS>3",strAccountNo) != CODE_OK)
+            {
+                abp_roll_back_transaction(cus_dbHandle,strNomeTransaction); /** IDMOD 00004 **/
+                PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "ROLLBACK API TRANSACTION :[%s]",strNomeTransaction );
+                logError(strOrderNum,strAccountNo,strDataNrc,sDataEstrazione,sqlca.sqlerrm.sqlerrmc,intCustId,strlsysdate);
+                continue;
+            }
+    
+            /* Se il risultato della count e' diverso da 0 Verifichiamo il balance*/
+            if(intCountAccStatus != 0)
+            {
+                intSumBalanceDue=0;
+
+                EXEC SQL AT :strCustDb 
+                SELECT sum(balance_due) 
+                INTO    :intSumBalanceDue
+                FROM    cmf_balance
+                WHERE   ACCOUNT_NO = :strAccountNo
+                ;
+
+                if(checkFileOracleErr(strCustDb, "SELECT sum(balance_due) FROM cmf_balance  WHERE  ACCOUNT_NO= '%s'",strAccountNo) != CODE_OK)
+                {
+                    abp_roll_back_transaction(cus_dbHandle,strNomeTransaction); /** IDMOD 00004 **/
+                    PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "ROLLBACK API TRANSACTION :[%s]",strNomeTransaction );
+                    logError(strOrderNum,strAccountNo,strDataNrc,sDataEstrazione,sqlca.sqlerrm.sqlerrmc,intCustId,strlsysdate);
+                    continue;
+                }
+
+                if(intSumBalanceDue != 0)
+                {
+                    PrintLog(WARNING, "ElaboraInvioFatture", "ACCOUNT DISC_REQ-MOROSO: Non e' possibile inserire il contributo per l'invio della fattura per l'account_no '%s'" , strAccountNo);        /** IDMOD :00002 **/
+                    abp_roll_back_transaction(cus_dbHandle,strNomeTransaction); /** IDMOD 00004 **/
+                    PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "ROLLBACK API TRANSACTION :[%s]",strNomeTransaction );
+                    logError(strOrderNum,strAccountNo,strDataNrc,sDataEstrazione,"ACCOUNT DISC_REQ-MOROSO: Non e' possibile inserire il contributo per l'invio della fattura",intCustId,strlsysdate);       /** IDMOD :00002 **/
+                    continue;
+                }
+
+            }
+
+        }
+
+        /** INIZIO IDMOD 00007 **/
+        /** INIZIO IDMOD: 00002 **/
+        /* Verifica se l'account risulta annullato in Kenan */
+        intAnnullati=0;
+        
+        EXEC SQL AT :strCustDb 
+        SELECT COUNT(1)
+        INTO    :intAnnullati 
+        FROM    CMF C,DISCONNECT_REASON_VALUES D
+        WHERE   C.ACCOUNT_NO = :strAccountNo
+        AND     C.DISCONNECT_REASON = D.DISCONNECT_REASON
+        AND     D.DISPLAY_VALUE LIKE '%ANNULLAMENTO%'
+        ;
+        
+        if(checkFileOracleErr(strCustDb, "SELECT COUNT(1) FROM CMF WHERE ACCOUNT_NO= '%s' AND ACCOUNT_STATUS=-2",strAccountNo) != CODE_OK)
+        {
+            abp_roll_back_transaction(cus_dbHandle,strNomeTransaction); /** IDMOD 00004 **/
+            PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "ROLLBACK API TRANSACTION :[%s]",strNomeTransaction );
+            logError(strOrderNum,strAccountNo,strDataNrc,sDataEstrazione,sqlca.sqlerrm.sqlerrmc,intCustId,strlsysdate);
+            continue;
+        }
+
+        /* Se il risultato della count e' diverso da 0 non e' possibile inserire il contributo per l'invio della fattura */
+        if( intAnnullati != 0 )
+        {
+            abp_roll_back_transaction(cus_dbHandle,strNomeTransaction); /** IDMOD 00004 **/
+            PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "ROLLBACK API TRANSACTION :[%s]",strNomeTransaction );
+            PrintLog(WARNING, (char *) sProcedureName, "ACCOUNT ANNULLATO: Non e' possibile inserire il contributo per l'invio della fattura per l'account_no '%s'" , strAccountNo);
+            logError(strOrderNum,strAccountNo,strDataNrc,sDataEstrazione,"ACCOUNT ANNULLATO: Non e' possibile inserire il contributo per l'invio della fattura",intCustId,strlsysdate);
+            continue;
+        }
+        
+        /** FINE IDMOD: 00002 **/
+
+        PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "strAccountNo '%s'" , strAccountNo);
+        PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "strTypeIdNrc '%s'" , strTypeIdNrc);
+        
+        /* Verifica se l'account e' disc_req o se l'account e' attivo ma non esistono SI attive ad esso associate. */
+        intActive=0;
+        EXEC SQL AT :strCustDb 
+        SELECT  count(1) 
+        INTO    :intActive
+        from    cmf
+        WHERE   account_no = :strAccountNo
+        AND     account_status > 0; /* se l'account_status e' maggiore di zero il cliente e' DISC_REQ */
+
+        if(checkFileOracleErr(strCustDb, "SELECT count(1) from cmf WHERE account_no='%s' AND account_status >0",strAccountNo)!= CODE_OK)
+        {
+            abp_roll_back_transaction(cus_dbHandle,strNomeTransaction); /** IDMOD 00004 **/
+            PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "ROLLBACK API TRANSACTION :[%s]",strNomeTransaction );
+            logError(strOrderNum,strAccountNo,strDataNrc,sDataEstrazione,sqlca.sqlerrm.sqlerrmc,intCustId,strlsysdate);
+            return CODE_ERR;
+        }
+    
+        intSIAttive=0;
+        EXEC SQL AT :strCustDb 
+        SELECT  count(1)
+        INTO    :intSIAttive
+        FROM    open_item_id_map a,emf e
+        WHERE   a.balance_account_no = :strAccountNo
+        AND     a.subscr_no = e.subscr_no
+        AND     e.equip_status in ( -1 , 0 );
+
+        if(checkFileOracleErr(strCustDb, "SELECT  count(1) FROM open_item_id_map a,emf e WHERE a.balance_account_no='%s' AND a.subscr_no=e.subscr_no  AND e.equip_status in (-1,0)",strAccountNo) != CODE_OK)
+        {
+            abp_roll_back_transaction(cus_dbHandle,strNomeTransaction); /** IDMOD 00004 **/
+            PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "ROLLBACK API TRANSACTION :[%s]",strNomeTransaction );
+            logError(strOrderNum,strAccountNo,strDataNrc,sDataEstrazione,sqlca.sqlerrm.sqlerrmc,intCustId,strlsysdate);
+            return CODE_ERR;
+        }
+    
+        /** INIZIO IDMOD 00003 **/
+        if(intActive == 0)    
+            strcpy(strActive,"NO");
+        else
+            strcpy(strActive,"SI");
+        /** FINE IDMOD 00003 **/
+
+        bzero(strSubscrNo,sizeof(strSubscrNo));
+        bzero(strExternalIdSi,sizeof(strExternalIdSi));
+
+        if( ( intActive != 0 ) || ( ( intActive == 0 ) && ( intSIAttive == 0 ) ) )
+        {
+            /* not in (-1.0) */
+            /* Selezione del minimo subscr_no DISC_REQ associato al Billing Account su cui effettuare l'inserimento del contributo */
+
+            /** DISQ_REQ **/
+            PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "*********** not in (-1.0) ***************" );
+            PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "strDataNrc '%s'" , strDataNrc);
+            PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "strInactiveDate '%s'" , strInactiveDate);
+            PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "strDataNrcInput '%s'" , strDataNrcInput);
+            PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "strDataNrcNew '%s'" , strDataNrcNew);
+            PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "strDataNrcLeast '%s'" , strDataNrcLeast);
+            PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "strOrderNum [%s]" , strOrderNum);
+            PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "strAccountNo [%s]" , strAccountNo);
+            PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "strExternalIdSi [%s]" , strExternalIdSi);
+            PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "strDataNrc [%s]" , strDataNrc);
+            PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "sDataEstrazione [%s]" , sDataEstrazione);
+            PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "**************************" );
+        
+            /** INIZIO IDMOD: 00002 **/
+            EXEC SQL AT :strCustDb 
+            SELECT  max(e.subscr_no)
+            INTO    :strSubscrNo
+            FROM    open_item_id_map a,emf e
+            WHERE   a.balance_account_no=:strAccountNo 
+            AND     a.subscr_no=e.subscr_no
+            AND     e.equip_status not in ('-1','0')
+            AND     e.emf_config_id = (SELECT min(b.emf_config_id)
+                                     FROM emf b
+                                     WHERE b.account_no=e.account_no);
+                    
+            if(checkFileOracleErr(strCustDb, "SELECT  max(e.subscr_no) FROM  open_item_id_map a,emf e WHERE  a.balance_account_no=:%s AND  a.subscr_no=e.subscr_no AND e.equip_status not in ('-1','0') AND  e.emf_config_id=(SELECT min(b.emf_config_id) FROM emf b WHERE b.account_no=e.account_no) ",strAccountNo) != CODE_OK)
+            /** FINE IDMOD: 00002 **/
+            {
+                abp_roll_back_transaction(cus_dbHandle,strNomeTransaction); /** IDMOD 00004 **/
+                PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "ROLLBACK API TRANSACTION :[%s]",strNomeTransaction );
+                logError(strOrderNum,strAccountNo,strDataNrc,sDataEstrazione,sqlca.sqlerrm.sqlerrmc,intCustId,strlsysdate);
+                continue;
+            }
+            
+            trim(strSubscrNo);
+
+            /**bzero(strDataNrc,sizeof(strDataNrc));**/ /** IDMOD 00002 **/ 
+            bzero(strDataNrcNew,sizeof(strDataNrcNew)); /** IDMOD 00002 **/ 
+            bzero(strInactiveDate,sizeof(strInactiveDate));
+            /* Selezione dell'external_id associata alla SI e della relativa inactive_date */
+            EXEC SQL AT :strCustDb 
+            SELECT  external_id,
+                    to_char(inactive_date,'yyyymmdd') ,
+                    to_char(inactive_date-1,'yyyymmdd')
+            INTO    :strExternalIdSi,
+                    :strInactiveDate,
+                    :strDataNrcNew      /** IDMOD 00002 **/ 
+                    /*:strDataNrc*/     /** IDMOD 00002 **/
+            FROM    customer_id_equip_map
+            WHERE   subscr_no = :strSubscrNo
+            AND     external_id_type = 10;
+            
+            if(checkFileOracleErr(strCustDb, "SELECT external_id,to_char(inactive_date,'yyyymmdd'),to_char(inactive_date-1,'yyyymmdd')  FROM customer_id_equip_map WHERE subscr_no='%s' AND external_id_type=10",strSubscrNo) != CODE_OK)
+            {
+                abp_roll_back_transaction(cus_dbHandle,strNomeTransaction); /** IDMOD 00004 **/
+                PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "ROLLBACK API TRANSACTION :[%s]",strNomeTransaction );
+                logError(strOrderNum,strAccountNo,strDataNrc,sDataEstrazione,sqlca.sqlerrm.sqlerrmc,intCustId,strlsysdate);
+                continue;
+
+            }
+            
+            trim(strDataNrcNew);        /** IDMOD 00002 **/ 
+            trim(strExternalIdSi);      /** IDMOD 00002 **/ 
+            trim(strInactiveDate);
+            
+            bzero(strDataNrcLeast,sizeof(strDataNrcLeast));
+
+            EXEC SQL AT :strCustDb
+            SELECT  to_char(LEAST(BC.CUTOFF_DATE,nvl(CMF.DATE_INACTIVE,to_date('30000101','yyyymmdd')))-1,'yyyymmdd')
+            INTO    :strDataNrcLeast
+            FROM    CMF,
+                    BILL_CYCLE BC
+            WHERE   CMF.ACCOUNT_NO = :strAccountNo
+            AND     CMF.NEXT_BILL_DATE IS NOT NULL
+            AND     BC.BILL_PERIOD = CMF. BILL_PERIOD
+            AND     BC.PPDD_DATE = CMF. NEXT_BILL_DATE ;
+
+            if(checkFileOracleErr(strCustDb, "SELECT to_char(LEAST(BC.CUTOFF_DATE,nvl(CMF.DATE_INACTIVE,to_date('30000101','yyyymmdd')))-1,'yyyymmdd') FROM CMF,BILL_CYCLE BC WHERE CMF.ACCOUNT_NO = '%s' AND CMF.NEXT_BILL_DATE IS NOT NULL AND BC.BILL_PERIOD = CMF. BILL_PERIOD AND BC.PPDD_DATE = CMF. NEXT_BILL_DATE",strAccountNo) != CODE_OK)
+            {
+                abp_roll_back_transaction(cus_dbHandle,strNomeTransaction); /** IDMOD 00004 **/
+                PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "ROLLBACK API TRANSACTION :[%s]",strNomeTransaction );
+                logError(strOrderNum,strAccountNo,strDataNrc,sDataEstrazione,sqlca.sqlerrm.sqlerrmc,intCustId,strlsysdate);
+                continue;
+            }
+
+            trim(strDataNrcLeast);
+        
+            /** INIZIO IDMOD 00002 **/
+            /** Imposto DATA NRC minima **/ 
+            if(strcmp(strDataNrcNew,strDataNrcLeast)>0)
+                sprintf(strDataNrcNew,"%s",strDataNrcLeast);
+            if(strcmp(strDataNrcNew,strDataNrc)<0)
+                sprintf(strDataNrc,"%s",strDataNrcNew);
+            /*****************************/
+
+            /* Se La data NRC e' precedente al 31 Agosto 2006 non e' possibile inserire il contributo per l'invio della fattura */
+            /** NB :20060831 Data Inizio progetto per  Addebito per invio Fattura **/
+            if(strcmp(strDataNrc,"20060831")<0)     
+            {
+                abp_roll_back_transaction(cus_dbHandle,strNomeTransaction); /** IDMOD 00004 **/
+                PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "ROLLBACK API TRANSACTION :[%s]",strNomeTransaction );
+                PrintLog(WARNING, "ElaboraInvioFatture", "DATA_NRC <31 agosto 2006: Non e' possibile inserire il contributo per l'invio della fattura per l'account_no '%s'" , strAccountNo);       /** IDMOD :00002 **/
+                logError(strOrderNum,strAccountNo,strDataNrc,sDataEstrazione,"DATA_NRC <31 agosto 2006: Non e' possibile inserire il contributo per l'invio della fattura",intCustId,strlsysdate);      /** IDMOD :00002 **/
+                continue;
+            }
+
+            /** Update spostate alla fine della procedura di acquisizione dati per evitare di Updatare record che vengono scartati **/
+            EXEC SQL AT :strCustDb 
+            UPDATE CUSTOMER_ID_EQUIP_MAP B
+            SET    B.INACTIVE_DATE = NULL
+            WHERE  b.subscr_no = :strSubscrNo
+            AND     external_id_type = 10;
+
+            if(checkFileOracleErr(strCustDb, "UPDATE CUSTOMER_ID_EQUIP_MAP B SET B.INACTIVE_DATE = NULL WHERE b.subscr_no ='%s' AND  external_id_type=10",strSubscrNo) != CODE_OK)
+            {
+                abp_roll_back_transaction(cus_dbHandle,strNomeTransaction); /** IDMOD 00004 **/
+                PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "ROLLBACK :[%s]",strCustDb );
+                PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "ROLLBACK API TRANSACTION :[%s]",strNomeTransaction );
+                rollbackDb(strCustDb, LEAVE_OPEN);
+                logError(strOrderNum,strAccountNo,strDataNrc,sDataEstrazione,sqlca.sqlerrm.sqlerrmc,intCustId,strlsysdate);
+                continue;
+            }
+
+            EXEC SQL AT :strCustDb 
+            UPDATE  EMF B
+            SET     B.EQUIP_STATUS = 1,
+                B.NO_BILL=0
+            WHERE   b.subscr_no = :strSubscrNo
+            AND     b.equip_status not in ('-1','0');
+
+            if(checkFileOracleErr(strCustDb, "UPDATE EMF B SET B.EQUIP_STATUS = 1,B.NO_BILL=0 WHERE b.subscr_no = '%s' AND b.equip_status not in ('-1','0')",strSubscrNo) != CODE_OK)
+            {
+                /** INIZIO IDMOD 00004 **/
+                PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "ROLLBACK :[%s]",strCustDb );
+                PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "ROLLBACK API TRANSACTION :[%s]",strNomeTransaction );
+                abp_roll_back_transaction(cus_dbHandle,strNomeTransaction);
+                rollbackDb(strCustDb, LEAVE_OPEN);
+                /** FINE IDMOD 00004 **/
+                logError(strOrderNum,strAccountNo,strDataNrc,sDataEstrazione,sqlca.sqlerrm.sqlerrmc,intCustId,strlsysdate);
+                continue;
+            }
+
+            commitDb(strCustDb,LEAVE_OPEN);
+
+            PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "COMMIT :[%s]",strCustDb );
+            /** FINE IDMOD 00002 **/
+
+        }
+        else
+        {   /* in (-1.0) */
+            /** ATTIVI **/
+            PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "*********** in (-1.0) INIZIO ***************" );
+            PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "strDataNrc '%s'" , strDataNrc);
+            PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "strInactiveDate '%s'" , strInactiveDate);
+            PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "strDataNrcInput '%s'" , strDataNrcInput);
+            PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "strDataNrcNew '%s'" , strDataNrcNew);
+            PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "strDataNrcLeast '%s'" , strDataNrcLeast);
+            PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "strOrderNum [%s]" , strOrderNum);
+            PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "strAccountNo [%s]" , strAccountNo);
+            PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "strExternalIdSi [%s]" , strExternalIdSi);
+            PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "strDataNrc [%s]" , strDataNrc);
+            PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "sDataEstrazione [%s]" , sDataEstrazione);
+            PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "**************************" );
+
+            /* Selezione del minimo subscr_no attivo su cui sara' effettuato l'inserimento del contributo */
+            /** INIZIO IDMOD: 00002 **/
+            EXEC SQL AT :strCustDb 
+            SELECT  max(e.subscr_no)
+            INTO    :strSubscrNo
+            FROM    open_item_id_map a,emf e
+            WHERE   a.balance_account_no = :strAccountNo
+            AND     a.subscr_no = e.subscr_no
+            AND     e.equip_status in ('-1','0')
+            AND     e.emf_config_id=(SELECT min(b.emf_config_id)
+                                                FROM emf b
+                                                WHERE b.account_no=e.account_no)
+            ;
+
+            if(checkFileOracleErr(strCustDb, "SELECT  max(e.subscr_no) FROM    open_item_id_map a,emf e WHERE   a.balance_account_no=:%s AND     a.subscr_no=e.subscr_no AND     e.equip_status in ('-1','0') AND     e.emf_config_id=(SELECT min(b.emf_config_id) FROM emf b WHERE b.account_no=e.account_no) ",strAccountNo) != CODE_OK)
+            /** FINE IDMOD: 00002 **/
+            {
+                abp_roll_back_transaction(cus_dbHandle,strNomeTransaction); /** IDMOD 00004 **/
+                PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "ROLLBACK API TRANSACTION :[%s]",strNomeTransaction );
+                logError(strOrderNum,strAccountNo,strDataNrc,sDataEstrazione,sqlca.sqlerrm.sqlerrmc,intCustId,strlsysdate);
+                continue;
+            }
+
+            trim(strSubscrNo);
+        
+            /* Selezione dell'external_id associata alla SI */  
+            EXEC SQL AT :strCustDb 
+            SELECT  external_id 
+            INTO    :strExternalIdSi
+            FROM    customer_id_equip_map
+            WHERE   subscr_no = :strSubscrNo
+            AND     external_id_type = 10;
+            
+            if(checkFileOracleErr(strCustDb, "SELECT external_id FROM customer_id_equip_map WHERE subscr_no='%s' AND external_id_type=10",strSubscrNo) != CODE_OK)
+            {
+                abp_roll_back_transaction(cus_dbHandle,strNomeTransaction); /** IDMOD 00004 **/
+                PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "ROLLBACK API TRANSACTION :[%s]",strNomeTransaction );
+                logError(strOrderNum,strAccountNo,strDataNrc,sDataEstrazione,sqlca.sqlerrm.sqlerrmc,intCustId,strlsysdate);
+                continue;
+            }
+
+            trim(strExternalIdSi);      /** IDMOD 00002 **/
+
+        }
+
+        trim(strExternalIdSi);
+
+        sic = new_abp_serv_inst_charge();
+
+        CreaNRC(sic, strDataNrc, strExternalIdSi, strOrderNum, sDataEstrazione);
+
+        PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "strOrderNum [%s]" , strOrderNum);
+        PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "strExternalIdSi [%s]" , strExternalIdSi);
+        PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "strAccountNo [%s]" , strAccountNo);
+        PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "strDataNrc [%s]" , strDataNrc);
+        PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "sDataEstrazione [%s]" , sDataEstrazione);
+
+        bzero(strOracleErr,sizeof(strOracleErr));
+        iRC = insert_abp_serv_inst_charge(cus_dbHandle, sic);
+
+        if ( GetAPIError(iRC, strOracleErr, sizeof(strOracleErr)) != 0)
+        {
+            PrintLog(ERROR, "ElaboraInvioFatture","ERRORE NELL'API insert_abp_serv_inst_charge %d %s per order_num '%s' e per External Id Si= '%s' !!!",iRC, strOracleErr,strOrderNum,strExternalIdSi);
+
+            if ( strcmp(strFlagMiscMsg,"Y") == 0)
+            {
+                PrintLog(ERROR, "ElaboraInvioFatture", "insert_abp_serv_inst_charge MISC MSG >%s<",abp_get_misc_message(cus_dbHandle,&msgno, &severity, &type));
+            }
+            else
+                PrintLog(ERROR, "ElaboraInvioFatture", "strOracleErr [%s]" , strOracleErr);
+
+            /* Rollback della transazione kenan */
+            abp_roll_back_transaction(cus_dbHandle,strNomeTransaction); /** IDMOD 00004 **/
+            PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "ROLLBACK API TRANSACTION :[%s]",strNomeTransaction );
+            PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "strOrderNum [%s]" , strOrderNum);
+            PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "strAccountNo [%s]" , strAccountNo);
+            PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "strExternalIdSi [%s]" , strExternalIdSi);
+            PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "strDataNrc [%s]" , strDataNrc);
+            PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "sDataEstrazione [%s]" , sDataEstrazione);
+
+            EXEC SQL AT :strCustDb 
+            UPDATE CUSTOMER_ID_EQUIP_MAP B
+            SET    B.INACTIVE_DATE = to_date(:strInactiveDate,'yyyymmdd')
+            WHERE  b.subscr_no = :strSubscrNo
+            AND     external_id_type = 10;
+
+            if(checkFileOracleErr(strCustDb, "Errore: UPDATE CUSTOMER_ID_EQUIP_MAP B SET B.INACTIVE_DATE =to_date('%s','yyyymmdd') WHERE b.subscr_no ='%s' AND  external_id_type=10",strInactiveDate,strSubscrNo) != CODE_OK)
+            {
+                /** INIZIO IDMOD 00004 **/
+                PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "ROLLBACK :[%s]",strCustDb );
+                PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "ROLLBACK API TRANSACTION :[%s]",strNomeTransaction );
+                abp_roll_back_transaction(cus_dbHandle,strNomeTransaction);
+                rollbackDb(strCustDb, LEAVE_OPEN);
+                /** FINE IDMOD 00004 **/
+                logError(strOrderNum,strAccountNo,strDataNrc,sDataEstrazione,sqlca.sqlerrm.sqlerrmc,intCustId,strlsysdate);
+                continue;
+            }
+
+            commitDb(strCustDb,LEAVE_OPEN);
+            PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "COMMIT :[%s]",strCustDb );
+
+            if(logError(strOrderNum,strAccountNo,strDataNrc,sDataEstrazione,strOracleErr,intCustId,strlsysdate)!=0)
+                return CODE_ERR;
+            
+            continue;
+
+        } /* fine controllo errore API*/
+
+        PrintLog(DEBUG_INFO, "ElaboraInvioFatture","Inserimento NRC effettuato correttamente");
+
+        if(strcmp(strInactiveDate,"") !=0 )
+        {
+
+            EXEC SQL AT :strCustDb 
+            UPDATE CUSTOMER_ID_EQUIP_MAP B
+            SET    B.INACTIVE_DATE = to_date(:strInactiveDate,'yyyymmdd')
+            WHERE  b.subscr_no = :strSubscrNo
+            AND     external_id_type = 10;
+
+            if(checkFileOracleErr(strCustDb, "UPDATE CUSTOMER_ID_EQUIP_MAP B SET B.INACTIVE_DATE =to_date('%s','yyyymmdd') WHERE b.subscr_no ='%s' AND  external_id_type=10",strInactiveDate,strSubscrNo) != CODE_OK)
+            {
+                /** INIZIO IDMOD 00004 **/
+                PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "ROLLBACK :[%s]",strCustDb );
+                PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "ROLLBACK API TRANSACTION :[%s]",strNomeTransaction );
+                abp_roll_back_transaction(cus_dbHandle,strNomeTransaction);
+                rollbackDb(strCustDb, LEAVE_OPEN);
+                /** FINE IDMOD 00004 **/
+                logError(strOrderNum,strAccountNo,strDataNrc,sDataEstrazione,sqlca.sqlerrm.sqlerrmc,intCustId,strlsysdate);
+                /* Rollback della transazione kenan */
+                continue;
+            }
+
+        }
+
+        /** La INACTIVE_DATE date va risistemata in ogni caso **/
+        commitDb(strCustDb,LEAVE_OPEN);
+
+        /* EXEC SQL AT :strCustDb ** commentato da IDMOD 00009 **/
+        EXEC SQL AT :strContDb /** IDMOD 00009: utilizzo connessione contabilizzatore **/
+        update crm_mese_report_ba t
+        set t.x_fattura_a_pagamento = 'SI-OK',
+            t.DISC_REQ = :strActive
+        where t.BILLING_ACCOUNT = :strOrderNum
+        and t.x_fattura_a_pagamento = 'SI'
+        ;
+
+        if(checkFileOracleErr(strCustDb, "update crm_mese_report_ba t set t.x_fattura_a_pagamento='SI-OK', t.DISC_REQ= %s where t.BILLING_ACCOUNT='%s' and t.x_fattura_a_pagamento ='SI')",strActive,strOrderNum) != CODE_OK)
+        {
+            /** INIZIO IDMOD 00004 **/
+            PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "ROLLBACK :[%s]",strCustDb );
+            PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "ROLLBACK API TRANSACTION :[%s]",strNomeTransaction );
+            abp_roll_back_transaction(cus_dbHandle,strNomeTransaction);
+            rollbackDb(strCustDb, LEAVE_OPEN);
+            rollbackDb(strContDb, LEAVE_OPEN); /** IDMOD 00009: rollback aggiornamento contabilizzatore **/
+            /** FINE IDMOD 00004 **/
+            logError(strOrderNum,strAccountNo,strDataNrc,sDataEstrazione,sqlca.sqlerrm.sqlerrmc,intCustId,strlsysdate);
+            continue;
+        }
+
+        commitDb(strCustDb,LEAVE_OPEN);
+        commitDb(strContDb,LEAVE_OPEN); /** IDMOD 00009: commit aggiornamento contabilizzatore **/
+
+        PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "COMMIT :[%s]",strCustDb );
+        PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "COMMIT API TRANSACTION :[%s]",strNomeTransaction );
+        abp_commit_transaction(cus_dbHandle,strNomeTransaction);
+        PrintLog(DEBUG_INFO, "ElaboraInvioFatture", "strDataNrc '%s'" , strDataNrc);
+        intRecorElaboratiOK++;
+
+    }
+
+    /* Chiudiamo il cursore */
+    EXEC SQL AT :strCustDb CLOSE CURS_INVIO_FATTURE;
+
+    if (sqlca.sqlcode != 0) {
+        PrintLog(WARNING, (char *) sProcedureName, "Chiusura del cursore CURS_INVIO_FATTURE non riuscita (SQLCODE %d).", sqlca.sqlcode);
+        logError(strOrderNum,strAccountNo,strDataNrc,sDataEstrazione,strOracleErr,intCustId,strlsysdate);
+        return CODE_ERR;
+    }
+
+    EXEC SQL AT :strCustDb                      
+    update   k
+    set (k.x_fattura_a_pagamento,k.disc_req)=  (
+                                       select  --+ parallel (a,8)
+                                               a.x_fattura_a_pagamento,a.disc_req
+                                              
+                                       FROM    crm_mese_report_ba a,customer_id_acct_map b
+                                       WHERE   a.BILLING_ACCOUNT=b.external_id
+                                       and     b.account_no=k.account_no
+                                       AND     a.x_fattura_a_pagamento in ('SI-OK','SI-KO')                     
+                                   )
+    WHERE   k.account_no between :strPrimoRec and :strUltimoRec
+    AND k.x_fattura_a_pagamento='SI'    /** IDMOD 00004 **/
+        AND     k.order_num  IN( select  --+ parallel (a,8)
+                                         a.BILLING_ACCOUNT
+                                 FROM    crm_mese_report_ba a
+                                 WHERE     a.x_fattura_a_pagamento in ('SI-OK','SI-KO')
+                                 )
+    ;
+
+    /** FINE IDMOD 00004**/ 
+    if ((sqlca.sqlcode!=100)&&(sqlca.sqlcode!=1403)) 
+        if (checkFileOracleErr(strCustDb,"UPDATE CRM_BIL_ACCOUNT_ADINFA k SET k.x_fattura_a_pagamento=(Select from crm_mese_report_ba where x_fattura_a_pagamento in ('SI-OK','SI-KO') per account no da %s a %s ",strPrimoRec,strUltimoRec) == CODE_ERR)
+        {
+            PrintLog(ERROR, (char *) sProcedureName, "TABELLA  CRM_BIL_ACCOUNT_ADINFA non allineata!! Effettuare UPDATE  a mano per lotto di account da %s a %s", strPrimoRec,strUltimoRec);
+            PrintInfLog("\nIl numero di account elaborati per questo lotto e' :\t%d",intTotaleLetti);
+            PrintInfLog("Il numero di account elaborati correttamente :\t%d",intRecorElaboratiOK);
+            PrintInfLog("Il numero di account scartati  :\t%d",(intTotaleLetti-intRecorElaboratiOK));
+            return CODE_ERR;
+
+        }
+        else
+        {
+            PrintLog(TRACE, (char *) sProcedureName, "ALLINEAMENTO x_fattura_a_pagamento. %d record aggiornati sulla CRM_BIL_ACCOUNT_ADINFA  per lotto di account da %s a %s", sqlca.sqlerrd[2],strPrimoRec,strUltimoRec);
+        }
+
+    PrintInfLog("\nIl numero di account elaborati per questo lotto e' :\t%d",intTotaleLetti);
+    PrintInfLog("Il numero di account elaborati correttamente :\t%d",intRecorElaboratiOK);
+    PrintInfLog("Il numero di account scartati  :\t%d",(intTotaleLetti-intRecorElaboratiOK));
+
+    return CODE_OK; 
+    
+}
+
+/*************************************************************************
+**
+**   Init
+**
+*************************************************************************/
+int Init(int argc, char **argv) {
+    static const char sProcedureName[]="Init";
+    char        sBuffer[LEN_WRK_BUFFER];
+    time_t      tOra;
+    struct      tm *tOraLocale;
+    char        strNomeFiglio[15];
+    char        buffer[100];
+    char        strNomeFileSql[60];
+
+    /* Leggiamo l'ora di inizio */
+    tOra = time(NULL);
+
+    /* Init a zero per le variabili stringa */
+    bzero(strNomeTransaction,sizeof(strNomeTransaction));   /** IDMOD 00004 **/
+    bzero(sBuffer,sizeof(sBuffer));
+    bzero(sPathCsvFile,sizeof(sPathCsvFile));
+    bzero(sDataEstrazione,sizeof(sDataEstrazione));
+    bzero(strSapId,sizeof(strSapId));
+    bzero(strXref3,sizeof(strXref3));
+    bzero(strImporto,sizeof(strImporto));
+    bzero(strAccountNo,sizeof(strAccountNo));
+    bzero(strRowId,sizeof(strRowId));
+    bzero(strArbCustSect,sizeof(strArbCustSect));
+    bzero(strCustId,sizeof(strCustId));
+    bzero(strIdLancio,sizeof(strIdLancio));
+    bzero(buffer,sizeof(buffer));
+    bzero(strNomeFileSql,sizeof(strNomeFileSql));
+
+
+    /**   Imposto stato del Batch a RUNN sulla Tabella ELAB BATCH                 **/
+    EXEC SQL AT :strCatDb
+    UPDATE  CRM_BIL_CON_VIEW_ELAB_BATCH
+    SET     CODE_STATO_BATCH = :strBtcRunning
+    WHERE   CODE_ELAB = :strCodeElabBatch;
+
+    if (checkOracleErr(strCatDb,"Update CRM_BIL_CON_VIEW_ELAB_BATCH allo stato %s WHERE CODE_ELAB = %s ",strBtcRunning,strCodeElabBatch) ==CODE_ERR)        
+    {
+        /* Rollback e chiusura della connessione sul DB strMedDb */
+        rollbackDb (strCatDb,LEAVE_OPEN) ;
+        return(EXIT_SQL_ERROR);
+    }
+
+    commitDb(strCatDb,LEAVE_OPEN);
+
+    /* Determinazione della sysdate della elaborazione */
+    EXEC SQL AT :strCatDb
+    SELECT  TO_CHAR(sysdate,'dd/mm/yyyy')||' 00.00.00',
+            /* TO_CHAR(sysdate,'yyyymmdd'),*/
+            TO_CHAR(sysdate,'dd/mm/yyyy  hh24:mi:ss')
+    INTO    :strlsysdate,
+            :strlsysdate_test
+    FROM DUAL;
+
+    /* Controllo errore Oracle e stampa della descrizione a video o sul file di log se questo e' stato aperto */
+    if (checkOracleErr(strCatDb,":ADINFA: SELECT TO_CHAR(sysdate,'yyyymmdd'),TO_CHAR(sysdate,'dd/mm/yyyy  hh24:mi:ss') FROM DUAL\n") == CODE_ERR)
+    {
+        rollbackDb (strCatDb,LEAVE_OPEN) ;
+        return(EXIT_SQL_ERROR);
+    
+    }
+
+    trim(strlsysdate);
+    trim(strlsysdate_test);
+
+    bzero(strNomeFiglio,sizeof(strNomeFiglio));
+
+    sprintf(strNomeFiglio,"kec%d_%s_%d",intCustId-2,strlseqppp,intNumLog);
+
+    if ( OpenLog( sLOGCfgName, SECTION_CONFIG_NAME, strUserid, strNomeFiglio, NULL, NULL, BATCH_NPAR) != CODE_OK ) { 
+        /*printf("%s: Errore durante l'apertura del file di log.\n", MODULE_NAME);*/
+        return CODE_ERR;
+    }
+
+    PrintLog(DEBUG_INFO, (char *) sProcedureName, "strlsysdate '%s'", strlsysdate);
+
+    /* Convertiamo in orario locale l'ora letta all'inizio della routine */
+    tOraLocale = localtime(&tOra);
+
+    /* Data non fornita a parametro */
+    /* Leggiamo da DB */
+    EXEC SQL AT :strCatDb
+    SELECT  TO_CHAR(SYSDATE, 'YYYYMMDD')
+    INTO    :sDataEstrazione
+    FROM    DUAL;
+           
+    if (checkFileOracleErr(strCatDb, "SELECT TO_CHAR(SYSDATE, 'YYYYMMDD') FROM DUAL") != CODE_OK) {
+        CloseLog("ERR");
+        PrintLog(DEBUG_INFO, (char *) sProcedureName, "ROLLBACK :[%s]",strCustDb );
+        PrintLog(DEBUG_INFO, (char *) sProcedureName, "ROLLBACK :[%s]",strCatDb );
+        rollbackDb(strCustDb, CLOSE_DB);
+        rollbackDb(strCatDb, LEAVE_OPEN);
+        return CODE_ERR;
+    }
+
+    trim(sDataEstrazione);
+
+    /****************************** GESTIONE CONNESSIONI API ***************************/
+    PrintLog(TRACE, (char *) sProcedureName, "Data Estrazione %s (Letta da DB)", sDataEstrazione);
+
+    /* Prelevo i parametri per la connessione al Catalog di Kenan/BP */
+    if ( ( GetValueParam(sDBCfgName, "ARBOR_CAT", "USERNAME", accessoDb.username) != CODE_OK ) ||
+         ( GetValueParam(sDBCfgName, "ARBOR_CAT", "PWD", accessoDb.password) != CODE_OK ) ||
+         ( GetValueParam(sDBCfgName, "ARBOR_CAT", "SID", accessoDb.dbName) != CODE_OK )  ||
+         (GetValueParam(sLOGCfgName, "ADINFA","LOG_MISC",strFlagMiscMsg) != CODE_OK ) ||
+         (GetValueParam(sLOGCfgName, "ADINFA","LOG_SQL",strFlagLogSql) != CODE_OK )||
+         (GetValueParam(sLOGCfgName, "ADINFA","NUM_UPDATE",strNumUpdate) != CODE_OK )
+       )
+    {
+    
+        PrintLog(ERROR, (char *) sProcedureName, "Parametri di accesso al Catalog di Kenan/BP non trovati nel file di configurazione <%s>!",sDBCfgName);
+        return(CODE_ERR_SYSTEM);
+    
+    }
+    
+    if ( strcmp(strFlagLogSql,"Y") == 0)
+    {
+    
+        if  (GetValueParam ( sLOGCfgName, "ADINFA" , "LOG_PATH", buffer) != CODE_OK )
+        {
+                PrintLog(ERROR, (char *) sProcedureName, "Parametro LOG_PATH non trovato nel file di configurazione <%s>!!",sLOGCfgName);
+                abp_db_logout(cat_dbHandle);
+                return(CODE_ERR_SYSTEM);
+        }
+    
+        sprintf(strNomeFileSql,"%s/LOG_API_ADINFA%s",buffer,strlseqppp);
+        PrintLog(DEBUG_INFO, (char *) sProcedureName, "Nome file sql=>%s<",strNomeFileSql);
+        abp_copy_sql_to_file(strNomeFileSql);
+    
+    }
+    
+    
+    /* Apertura Connessione con DataBase Catalog Kenan/BP */
+    if (OpenCatalogConnection (accessoDb.dbName,accessoDb.username,accessoDb.password) != 0)
+    {
+        PrintLog(ERROR, (char *) sProcedureName, "Accesso al DataBase Catalog <%s> non effettuato",accessoDb.dbName);
+        
+        /* Imposto il return al Promo */
+        abp_db_logout(cat_dbHandle);
+        return (CODE_ERR_ARBOR);
+    } /* Fine Apertura Connessione Arbor */
+    
+    /* Apertura Connessione con DataBase Customer Kenan/BP */
+    if (OpenCustomerConnectionMSA (strCustDb,accessoDb.username,accessoDb.password,intCustId ) != 0 )
+    {
+        PrintLog(ERROR, (char *) sProcedureName, "Accesso al DataBase Customer <%s> non effettuato",strCustDb);
+        abp_db_logout(cat_dbHandle);
+        return (CODE_ERR_ARBOR);
+    
+    } /* Fine Apertura Connessione Arbor */
+    
+    PrintLog(DEBUG_INFO, (char *) sProcedureName, "Connessione API al Database %s effettuata",strCustDb);
+    PrintLog(DEBUG_INFO, (char *) sProcedureName, "Connessione al Database %s effettuata: acquisito cat_dbHandle",accessoDb.dbName);
+    
+    /* Se il flag Misc Err viene inizializzata la transazione per l'utilizzo della funzione misc_message */
+    if ( strcmp(strFlagMiscMsg,"Y") == 0)
+    {
+        PrintLog(DEBUG_INFO, (char *) sProcedureName, "Eseguita abp_initialize_message_system");
+        if (abp_initialize_message_system(cus_dbHandle,"cream") != 0)
+        {
+            PrintLog(ERROR, (char *) sProcedureName, "Errore misc:->|%s|<-",abp_get_db_message(cus_dbHandle,&msgno, &severity, &type));
+            /***************************************************/
+            /****  Chiusura  Connessione DataBase  Arbor    ****/
+            /***************************************************/
+            abp_cust_server_logout(cus_dbHandle);
+            abp_db_logout(cat_dbHandle);
+            return(EXIT_SQL_ERROR);
+        
+        }
+    
+        PrintLog(DEBUG_INFO, (char *) sProcedureName, "Ok.Eseguita abp_initialize_message_system");
+    
+    }
+    
+    /****************************** GESTIONE CONNESSIONI API ***************************/
+    
+    sprintf(strNomeTransaction,"%s_%s_%s","ADINFA",sDataEstrazione,strlseqppp);
+
+    /* Dump dei parametri */    
+    PrintLog(TRACE, (char *) sProcedureName, "Connesso a %s", strCustDb);
+    PrintLog(TRACE, (char *) sProcedureName, "Connesso a %s", strCatDb);
+
+    return CODE_OK;
+    
+}
+/*************************************************************************
+**************************************************************************
+**
+**   MAIN:  ADINFA
+**
+**************************************************************************
+*************************************************************************/
+int main(int argc, char **argv) {
+
+    /** INIZIO VERSIONING SU PROMPT **/
+    if(argc == 1) {
+        printf("%s - versione ID_MOD %s\nStringa di lancio: %s\n\n", argv[0], ID_MOD, STR_LANCIO);
+        exit(0);
+    }
+    /** FINE VERSIONING SU PROMPT **/
+
+    static const char sProcedureName[]="Main";
+    register int    iRet;
+    /* Stampiamo l'header del modulo */
+    /*printf("\n%s - Versione %s.\n\n", MODULE_NAME, CURRENT_VERSION_MODULE);*/
+    
+    bzero(strDataNrc,sizeof(strDataNrc));
+    bzero(strDataNrcInput,sizeof(strDataNrcInput));
+    bzero(strUserid,sizeof(strUserid));
+    bzero(strCodeElabBatch,sizeof(strCodeElabBatch));
+    bzero(sLOGCfgName,sizeof(sLOGCfgName));
+    bzero(sDBCfgName,sizeof(sDBCfgName));
+    bzero(strCatDb,sizeof(strCatDb));
+    bzero(strChangeDate,sizeof(strChangeDate));
+    bzero(strNumBloc,sizeof(strNumBloc));
+    bzero(strCustDb,sizeof(strCustDb));
+    bzero(strTypeIdNrc,sizeof(strTypeIdNrc));
+    bzero(strOrderNum,sizeof(strOrderNum));
+    bzero(strFlagMiscMsg,sizeof(strFlagMiscMsg));
+    bzero(strFlagLogSql,sizeof(strFlagLogSql));
+
+    if (( argc !=9 ) && ( argc !=10 ))
+    {
+        /* Stampo un messaggio a video che identifica errore ed esco */
+        printf("ADINFA: Impossibile eseguire Batch: numero di parametri di input non corretto %d \n\n",argc);
+                exit(10);
+    }
+    
+    strcpy (strUserid, argv[1]);
+    strcpy (strCodeElabBatch, argv[2]);
+    strcpy (strDataNrcInput, argv[4]);
+    
+    /* Copia dell'identificativo del customer server di Kenan/BP */
+    strcpy(strCustId,  &argv[5][strlen(constCustId)]);
+    /* Copia dell'identificativo del lancio */
+    strcpy(strIdLancio,&argv[6][strlen(constIdLancio)]);
+    
+    trim(strUserid);
+    trim(strCodeElabBatch);
+    trim(strDataNrcInput);
+    strcpy(strDataNrc,  strDataNrcInput);
+
+    intCustId=atoi(strCustId);
+
+    /*strcpy (strTypeIdNrc, "4503");   IDMOD: 00001    */
+
+    /* Init e Connessione al DB */
+    iRet = InitStartBatch("ARBOR_CAT", strCatDb, sDBCfgName, sLOGCfgName);
+
+    /* Controlliamo che non vi sono errori */
+    if (iRet == CODE_ERR_SYSTEM) {
+        printf("%s: Errore di sistema.\n", MODULE_NAME);
+        return CODE_ERR;
+    } else if (iRet != CODE_OK)
+    {
+        printf("%s: Errore durante la connessione a %s.\n", MODULE_NAME, strCatDb);
+        return CODE_ERR;
+    }
+
+    /* Settaggio sezione del Customer */
+    sprintf(strArbCustSect,"ARBCUST_%d",intCustId-2);
+    
+    PrintLog(DEBUG_INFO, (char *) sProcedureName, "Sezione Customer %s",strArbCustSect);
+
+    bzero( accessoDb.username,sizeof( accessoDb.username));
+    bzero( accessoDb.password,sizeof( accessoDb.password));
+    bzero( accessoDb.dbName,sizeof( accessoDb.dbName));
+
+    /* Prelevo i parametri per la connessione al Customer Server di Kenan/BP */
+    if ( ( GetValueParam(sDBCfgName, strArbCustSect, "USERNAME", accessoDb.username) != CODE_OK ) ||
+         ( GetValueParam(sDBCfgName, strArbCustSect, "PWD", accessoDb.password) != CODE_OK ) ||
+         ( GetValueParam(sDBCfgName, strArbCustSect, "SID", accessoDb.dbName) != CODE_OK ) )
+    {
+
+       /*PrintLog(ERROR, (char *) sProcedureName, "Parametri di accesso al DataBase di %s non trovati!\n",strArbCustSect );*/
+       printf("Parametri di accesso al DataBase di %s non trovati!\n",strArbCustSect );
+       /* Errore di apertura del file di log.
+           Terminiamo il processo */
+       rollbackDb (strCatDb,LEAVE_OPEN) ;
+       set_close_to_promo();
+       exit(CODE_ERR_SYSTEM);
+
+    }
+
+    strcpy (strCustDb, accessoDb.dbName);
+    /* Apertura connessione al DB Customer */
+    if(connectDb(&accessoDb,strCustDb) == CODE_ERR)
+    {
+        /* Rollback e chiusura della connessione sul DB del contabilizzatore */
+        rollbackDb (strCatDb,LEAVE_OPEN) ;
+        set_close_to_promo();
+        exit(EXIT_SQL_ERROR);
+    }
+
+    PrintLog(DEBUG_INFO, (char *) sProcedureName, "Connessione al Database %s effettuata",strCustDb);
+        
+    /** INIZIO IDMOD 00009: connessione al Contabilizzatore **/
+
+    PrintLog(DEBUG_INFO, (char *) sProcedureName, "Sezione Contabilizzatore");
+
+    bzero(accessoDb.username,sizeof( accessoDb.username));
+    bzero(accessoDb.password,sizeof( accessoDb.password));
+    bzero(accessoDb.dbName,sizeof( accessoDb.dbName));
+
+    /* Prelevo i parametri per la connessione al Contabilizzatore */
+    if ((GetValueParam(sDBCfgName, "CONTAB", "USERNAME", accessoDb.username) != CODE_OK ) ||
+        (GetValueParam(sDBCfgName, "CONTAB", "PWD", accessoDb.password) != CODE_OK ) ||
+        (GetValueParam(sDBCfgName, "CONTAB", "SID", accessoDb.dbName) != CODE_OK ))
+    {
+        printf("Parametri di accesso al DataBase di CONTAB non trovati!\n");
+        /* Errore di apertura del file di log, terminiamo il processo */
+        rollbackDb(strCatDb,LEAVE_OPEN);
+        rollbackDb(strCustDb,CLOSE_DB);
+        set_close_to_promo();
+        exit(CODE_ERR_SYSTEM);
+    }
+    else
+        strcpy(strContDb, accessoDb.dbName);
+    
+    /* Apertura connessione al DB Contabilizzatore */
+    if(connectDb(&accessoDb, strContDb) == CODE_ERR)
+    {
+        /* Rollback e chiusura della connessione sui db aperti fin'ora */
+        rollbackDb(strCatDb,LEAVE_OPEN);
+        rollbackDb(strCustDb,CLOSE_DB);
+        set_close_to_promo();
+        exit(EXIT_SQL_ERROR);
+    }
+    else
+        PrintLog(DEBUG_INFO, (char *) sProcedureName, "Connessione al Database CONTAB effettuata");
+    /** FINE IDMOD 00009: connessione al Contabilizzatore **/
+
+    /** INIZIO IDMOD: 00001 **/
+    if ( GetValueParam(sLOGCfgName, "ADINFA","TYPE_ID_NRC",strTypeIdNrc) != CODE_OK)
+    {
+        PrintLog ( ERROR , (char *) sProcedureName , "Parametro TYPE_ID_NRC non trovato nel file >%s<",sLOGCfgName);
+        
+        /* Rollback e chiusura della connessione sul DB del contabilizzatore */
+        rollbackDb (strCatDb,LEAVE_OPEN) ;
+        set_close_to_promo();
+        exit(CODE_ERR_SYSTEM);
+    }
+
+    trim ( strTypeIdNrc );
+    /** FINE IDMOD: 00001 **/
+
+    if ( argc == 9 ) /* ADINFA padre */
+    {
+        intCheckPadre=1;
+        iNumBlocchi=atoi(trim(argv[3]));
+        /*printf("iNumBlocchi %d \n",iNumBlocchi);*/
+        /* Calcoliamo i blocchi da elaborare */
+        PrintLog(TRACE,(char *) sProcedureName, "CalcolaBlocchi");
+
+        if(CalcolaBlocchi() != CODE_OK) 
+        {
+            PrintLog(ERROR, (char *) sProcedureName, "Elaborazione terminata con errore.");
+            rollbackDb(strCatDb, LEAVE_OPEN);
+            set_close_to_promo();   
+            return (CODE_ERR_SYSTEM);        /** IDMOD: 00006 **/   
+        }
+
+        set_close_to_promo();
+        CloseLog(strCodeElabBatch);
+        return (iRC);
+    }
+    else /* ADINFA figlio */
+    {
+        intCheckPadre=0;
+        /* INSERITO SEMAFORO */
+        setsema( -1 );  
+        bzero(strPrimoRec,sizeof(strPrimoRec));
+        bzero(strUltimoRec,sizeof(strUltimoRec));
+
+        strcpy (strlseqppp, argv[3]);
+        strcpy (strUltimoRec, argv[7]);
+        strcpy (strPrimoRec, argv[8]);
+        intNumLog = atoi(argv[9]);
+        strcpy (strDataNrc, argv[4]);
+    
+        trim(strPrimoRec);
+        trim(strUltimoRec);
+        trim(strlseqppp);
+        trim(strDataNrc);
+        PrintLog(TRACE,(char *) sProcedureName, "Sono Il Figlio");
+        /*printf(" strlseqppp >%s< \n",strlseqppp);
+        printf(" strUltimoRec >%s< \n",strUltimoRec);
+        printf(" strPrimoRec >%s< \n",strPrimoRec);
+        printf(" intNumLog >%d< \n",intNumLog);
+        printf(" strDataNrc >%s< \n",strDataNrc);*/
+
+    }
+
+    /* Init del modulo */
+    if (Init(argc, argv) != CODE_OK) {
+        PrintLog(ERROR, (char *) sProcedureName, "Fase di inizializzazione non andata a buon fine!.");
+        set_close_to_promo();   
+        return (CODE_ERR_SYSTEM);        /** IDMOD: 00006 **/   
+    }
+
+    PrintLog(TRACE, (char *) sProcedureName, "INIZIO ELABORAZIONE per lotto da >%s< a >%s<",strPrimoRec,strUltimoRec);
+    /* Elaboriamo */
+
+    if(ElaboraInvioFatture() != CODE_OK) {
+        PrintLog(ERROR, (char *) sProcedureName, "Elaborazione Invio Fatture terminata con errore.");
+        PrintLog(DEBUG_INFO, (char *) sProcedureName, "ROLLBACK :[%s]",strCustDb );
+        rollbackDb(strCustDb, CLOSE_DB);
+        rollbackDb(strContDb, CLOSE_DB); /** IDMOD 00009: rollback e chiusura connessione contabilizzatore **/
+        set_close_to_promo();   
+        return (EXIT_SQL_ERROR);        /** IDMOD: 00006 **/
+    }
+
+    PrintInfLog("\nElaborazione terminata correttamente.\n");
+    
+    commitDb(strContDb, CLOSE_DB); /** IDMOD 00009: commit e chiusura connessione contabilizzatore **/
+    commitDb(strCustDb, CLOSE_DB);
+    commitDb(strCatDb, LEAVE_OPEN);
+    set_close_to_promo();   
+
+    PrintLog(DEBUG_INFO, (char *) sProcedureName, "iRC %d",iRC);
+    CloseLog(strCodeElabBatch);
+    return (iRC);
+
+}
+
+/********************************************************************************************
+**                                                                                         **
+**  CalcolaBlocchi: questa elaborazione viene effettuata esclusivamente dal processo padre **
+**                                                                                         **
+********************************************************************************************/
+int CalcolaBlocchi() 
+{
+    static const char sProcedureName[]="CalcolaBlocchi";
+    char    szCommandLancio[1024];
+    int     i;
+    int     j;
+    int     lCountRec=0;    
+    int     lCountRecTot=0; 
+    int     intCountFiglio=0;
+    int     intNumUpdateStato=0;
+
+    printf("SONO IL PADRE\n");
+
+    /*bzero(strlseqppp ,sizeof(strlseqppp ));*/
+    bzero(strPrimoRec,sizeof(strPrimoRec));
+    bzero(sMeseEstrazione,sizeof(sMeseEstrazione));     /** IDMOD 00004 **/
+    bzero(sMeseInserimento,sizeof(sMeseInserimento));   /** IDMOD 00004 **/
+    bzero(strUltimoRec,sizeof(strUltimoRec));
+    bzero(strUltimoRecControllo,sizeof(strUltimoRecControllo));
+       
+    /**   Imposto stato del Batch a RUNN sulla Tabella ELAB BATCH                 **/
+    EXEC SQL AT :strCatDb
+    UPDATE  CRM_BIL_CON_VIEW_ELAB_BATCH
+    SET     CODE_STATO_BATCH = :strBtcRunning
+    WHERE   CODE_ELAB = :strCodeElabBatch;
+    
+    if (checkOracleErr(strCatDb,"Update CRM_BIL_CON_VIEW_ELAB_BATCH allo stato %s WHERE CODE_ELAB = %s ",strBtcRunning,strCodeElabBatch) ==CODE_ERR)
+    {
+        /* Rollback e chiusura della connessione sul DB strMedDb */
+        rollbackDb (strCatDb,LEAVE_OPEN) ;
+        exit(EXIT_SQL_ERROR);
+    }
+    
+    commitDb(strCatDb,LEAVE_OPEN);
+    
+    /* Determinazione della sequence che individua il file */
+    EXEC SQL AT :strCatDb
+    SELECT TO_CHAR(SEQ_ADINFA.nextval)
+    INTO   :strlseqppp
+    FROM DUAL;
+    
+    /* Controllo errore Oracle e stampa della descrizione a video o sul file di log se questo e' stato aperto */
+    if (checkOracleErr(strCatDb,"ADINFA: SELECT TO_CHAR(SEQ_ADINFA.nextval) \n") == CODE_ERR)
+    {
+        exit(EXIT_SQL_ERROR);
+    }
+
+    trim(strlseqppp);
+    PrintLog(DEBUG_INFO,(char *) sProcedureName, " strlseqppp >%s<",strlseqppp);
+
+    /***************************/
+    /* Apro Log Processo Padre */
+    /***************************/
+    if ( OpenLog( sLOGCfgName, SECTION_CONFIG_NAME, strUserid, strlseqppp, NULL, NULL, BATCH_NPAR) != CODE_OK )  
+    {
+        return CODE_ERR;
+    }
+
+    bzero(szCommandLancio,sizeof(szCommandLancio));
+
+    iRC=0;
+    lCountRec=0;
+    lCountRecTot=0;
+
+    /** INIZIO IDMOD 00004 **/
+        
+    /*********************************/
+    /**     PRIMA ESECUZIONE    **/
+    /*********************************/
+    
+    /** INIZIO IDMOD 00003 **/
+    PrintLog(DEBUG_INFO, (char *) sProcedureName, "Cancellazione tabella CRM_BIL_ACCOUNT_ADINFA ");
+    EXEC SQL AT :strCustDb                      
+    delete CRM_BIL_ACCOUNT_ADINFA;
+    
+    if ((sqlca.sqlcode!=100)&&(sqlca.sqlcode!=1403)) 
+        if(checkFileOracleErr(strCustDb, "1: DELETE TABLE CRM_BIL_ACCOUNT_ADINFA") != CODE_OK)
+        {
+            PrintLog(DEBUG_INFO, (char *) sProcedureName, "ROLLBACK :[%s]",strCustDb );
+            PrintLog(DEBUG_INFO, (char *) sProcedureName, "ROLLBACK :[%s]",strCatDb );
+            rollbackDb(strCustDb, CLOSE_DB);
+            rollbackDb(strCatDb, LEAVE_OPEN);
+            set_close_to_promo();   
+            return (CODE_ERR);
+    
+        }
+    
+    PrintLog(DEBUG_INFO, (char *) sProcedureName, "popolamento tabella CRM_BIL_ACCOUNT_ADINFA ");
+    EXEC SQL AT     :strCustDb
+    INSERT INTO CRM_BIL_ACCOUNT_ADINFA k
+        (   k.account_no,
+            k.order_num,
+            k.x_fattura_a_pagamento,
+            k.disc_req           /** IDMOD 00005 **/
+        )
+        (
+            select  --+ parallel (a,8)
+                    b.account_no, a.BILLING_ACCOUNT,a.x_fattura_a_pagamento,a.disc_req /** IDMOD 00005 **/ /** IDMOD 00004 **/
+            FROM    crm_mese_report_ba a,customer_id_acct_map b
+            WHERE   a.BILLING_ACCOUNT=b.external_id
+            AND     a.x_fattura_a_pagamento IN ('SI','SI-OK','SI-KO')        /** IDMOD 00004 **/
+        );
+
+    if (checkFileOracleErr(strCustDb,"INSERT INTO CRM_BIL_ACCOUNT_ADINFA k (k.account_no, k.order_num, k.x_fattura_a_pagamento, k.data_inserimento) ( select  --+ parallel (a,8) b.account_no, a.BILLING_ACCOUNT,a.x_fattura_a_pagamento FROM    crm_mese_report_ba a,customer_id_acct_map b WHERE   a.BILLING_ACCOUNT=b.external_id AND     a.x_fattura_a_pagamento IN ('SI','SI-OK','SI-KO')") == CODE_ERR)
+    {
+        PrintLog(DEBUG_INFO, (char *) sProcedureName, "ROLLBACK :[%s]",strCustDb );
+        PrintLog(DEBUG_INFO, (char *) sProcedureName, "ROLLBACK :[%s]",strCatDb );
+        rollbackDb(strCustDb, CLOSE_DB);
+        rollbackDb(strCatDb, LEAVE_OPEN);
+        set_close_to_promo();   
+        return CODE_ERR;
+    }
+             
+    /** FINE IDMOD 00003 **/
+    commitDb(strCustDb,LEAVE_OPEN);
+
+    PrintLog(DEBUG_INFO, (char *) sProcedureName, "FASE DI START (PRIMA ELABORAZIONE/RIPARTENZA): TERMINATA");
+    /** FINE IDMOD 00004 **/
+
+    /*conto il numero di record da elaborare */         /*   OK AGNESE */
+    EXEC SQL AT     :strCustDb
+    SELECT                                   
+        /* IDMOD 00008 */
+        COUNT(1) 
+    INTO    :lCountRecTot
+    FROM    CRM_BIL_ACCOUNT_ADINFA
+    WHERE   x_fattura_a_pagamento = 'SI'  /** IDMOD 00004 **/
+    ;
+
+    if (checkFileOracleErr(strCustDb,"SELECT COUNT(1) FROM CRM_BIL_ACCOUNT_ADINFA  WHERE   x_fattura_a_pagamento='SI'") == CODE_ERR)
+    {
+        return CODE_ERR;
+    }
+
+    if (lCountRecTot == 0 )
+    {
+        PrintLog ( WARNING , (char *) sProcedureName , "Non ci sono record da elaborare");
+        return CODE_OK;
+    }
+
+    PrintInfLog("\nNumero di Account da elaborare :\t%d\n",lCountRecTot);
+
+    /* divido il numero dei record da elaborare in blocchi */   
+    lCountRec = (lCountRecTot / iNumBlocchi);
+    PrintInfLog("%d blocchi da %d\n",iNumBlocchi,lCountRec);
+    
+    EXEC SQL                /* OK AGNESE */
+    DECLARE CURSORE_BLOCCHI CURSOR FOR  
+    SELECT  --+ parallel (b,8)
+            b.account_no
+    FROM    CRM_BIL_ACCOUNT_ADINFA b
+    WHERE   x_fattura_a_pagamento = 'SI'  /** IDMOD 00004 **/
+    ORDER BY b.account_no
+    ;
+
+    EXEC SQL AT     :strCustDb
+    OPEN CURSORE_BLOCCHI;
+    
+    if (checkFileOracleErr(strCustDb,"Errore apertura cursore CURSORE_BLOCCHI.") == CODE_ERR)
+    {
+        return CODE_ERR;
+    }
+
+    for ( i=0 ; i< iNumBlocchi ; i++ ) /* per ogni blocco */
+    {
+        /*determino il primo record del blocco */
+        EXEC SQL AT     :strCustDb
+        FETCH       CURSORE_BLOCCHI
+        INTO        :strPrimoRec;
+
+        if ((sqlca.sqlcode==100)||(sqlca.sqlcode==1403)) 
+            break;
+
+        if (checkFileOracleErr(strCustDb,"ERRORE FETCH CURSORE_BLOCCHI. Determinazione primo record") == CODE_ERR)
+        {
+            return CODE_ERR;
+        }
+        trim(strPrimoRec);
+        intCountFiglio = 1;
+        
+        /* se l'ultimo record controllato e' uguale al primo record del nuovo blocco passo al record successivo*/
+        if((i!=0)&&(strcmp(strUltimoRecControllo,strPrimoRec)==0))
+        {
+            i--;
+            continue;   
+        }
+
+        sprintf(strUltimoRec,"%s",strPrimoRec);
+
+        /* determino ultimo elemento del blocco */
+        for ( j=1; j<lCountRec ; j++ )
+        {
+            EXEC SQL AT     :strCustDb      
+            FETCH           CURSORE_BLOCCHI 
+            INTO            :strUltimoRec;
+
+            if ((sqlca.sqlcode==100)||(sqlca.sqlcode==1403)) break;
+            if (checkFileOracleErr(strCustDb,"ERRORE FETCH CURSORE_BLOCCHI. Determinazione ultimo record") == CODE_ERR)
+            {
+                return CODE_ERR;
+            }
+
+            intCountFiglio++;
+        }
+
+        trim(strUltimoRec);
+
+        /* L'ultimo blocco lancia anche gli account restanti */
+        if ( (i == iNumBlocchi-1) &&  (sqlca.sqlcode!=100)&&(sqlca.sqlcode!=1403) )
+        {
+            PrintLog ( TRACE , (char *) sProcedureName , "Gestione Resto per account_no=>%s<",strUltimoRec);
+            for ( ; ; )
+            {
+                EXEC SQL AT     :strCustDb      
+                FETCH           CURSORE_BLOCCHI 
+                INTO            :strUltimoRec;
+
+                if ((sqlca.sqlcode==100)||(sqlca.sqlcode==1403)) break;
+
+                if (checkFileOracleErr(strCustDb,"ERRORE FETCH CURSORE_BLOCCHI-Gestione Resto. ") == CODE_ERR)
+
+                {
+                    return CODE_ERR;
+                }
+                intCountFiglio++;
+            }
+
+        }
+
+        trim(strUltimoRec);
+
+        bzero(strUltimoRecControllo,sizeof(strUltimoRecControllo));
+        strcpy(strUltimoRecControllo,strUltimoRec);
+
+        PrintLog ( TRACE , (char *) sProcedureName , "Primo Record = >%s< Ultimo Record = >%s< Cardinalita' = >%d<",strPrimoRec,strUltimoRec, intCountFiglio);
+        intNumLog++;
+        intCountAdinfa++;
+        sprintf(szCommandLancio,"CO$ADINFA$%s$_$%s$%s$CUST_ID=%d$ID_LANCIO=%s$%s$%s$%d" , strUserid,strlseqppp,strDataNrc,intCustId,strIdLancio,strUltimoRec,strPrimoRec,intNumLog);
+        PrintLog ( DEBUG_INFO , (char *) sProcedureName , "szCommandLancio = >%s< ",szCommandLancio);
+
+        if( 0 == sendToPromo(szCommandLancio))
+        {
+            PrintInfLog( "\nImpossibile lanciare    ADINFA[%d] !!\n" , i);
+            PrintInfLog( "\nStringa inviata al PROMO: [%s]" , szCommandLancio);
+            iRC = 10;
+        }
+
+        sleep(10);
+
+    }
+
+    EXEC SQL AT     :strCustDb
+    CLOSE CURSORE_BLOCCHI;
+
+    if (checkFileOracleErr(strCustDb,"ERRORE CLOSE CURSORE_BLOCCHI.") == CODE_ERR)
+    {
+        return CODE_ERR;
+    }
+
+    return CODE_OK;
+}
+
+int logError(char *strOrderNum,char *strAccountNo,char *strDataNrc,char *sDataEstrazione, char *strOracleErr, int intCustId,char *strlsysdate)
+{
+    static const char sProcedureName[]="logError";
+    iRC=10;
+    EXEC SQL AT     :strCatDb
+    insert into log_addebito_invio_fat values   
+    (
+        :strOrderNum,
+        :strAccountNo,
+        to_date(:strDataNrc,'yyyymmdd'),
+        to_date(:sDataEstrazione,'yyyymmdd'),
+        substr(:strOracleErr,0,200),
+        :intCustId,
+        to_date(:strlsysdate_test,'dd/mm/yyyy  hh24:mi:ss')
+    );
+
+    if (checkFileOracleErr(strCatDb,"insert into log_addebito_invio_fat values ('%s','%s',to_date('%s','yyyymmdd'),to_date('%s','yyyymmdd'),substr('%s',0,200),%d,to_date('%s','dd/mm/yyyy  hh24:mi:ss'))",strOrderNum,strAccountNo,strDataNrc,sDataEstrazione,strOracleErr,intCustId,strlsysdate_test) == CODE_ERR)
+    {   /** INIZIO IDMOD 00004 **/
+        PrintLog(DEBUG_INFO, (char *) sProcedureName, "ROLLBACK :[%s]",strCustDb );
+        PrintLog(DEBUG_INFO, (char *) sProcedureName, "ROLLBACK :[%s]",strCatDb );
+        rollbackDb(strContDb, LEAVE_OPEN); /** IDMOD 00009: rollback aggiornamento contabilizzatore **/
+        rollbackDb(strCustDb, LEAVE_OPEN); 
+        rollbackDb(strCatDb, LEAVE_OPEN); 
+        /** FINE IDMOD 00004 **/
+        return CODE_ERR;
+    }
+    
+    /* EXEC SQL AT :strCustDb ** commentato da IDMOD 00009 **/
+    EXEC SQL AT :strContDb /** IDMOD 00009: utilizzo connessione contabilizzatore **/
+    update crm_mese_report_ba t
+    set t.x_fattura_a_pagamento='SI-KO',
+        t.disc_req=null             /** IDMOD 00004 **/
+    where t.BILLING_ACCOUNT=:strOrderNum
+    and   t.x_fattura_a_pagamento ='SI'
+    ;
+
+    if(checkFileOracleErr(strCustDb, "update crm_mese_report_ba t set t.x_fattura_a_pagamento='SI-KO' ,  t.disc_req=null where t.BILLING_ACCOUNT='%s' and   t.x_fattura_a_pagamento ='SI' ",strOrderNum) != CODE_OK)
+    {
+    /** INIZIO IDMOD 00004 **/
+    PrintLog(DEBUG_INFO, (char *) sProcedureName, "ROLLBACK :[%s]",strCustDb );
+    PrintLog(DEBUG_INFO, (char *) sProcedureName, "ROLLBACK :[%s]",strCatDb );
+            rollbackDb(strContDb, LEAVE_OPEN); /** IDMOD 00009: rollback aggiornamento contabilizzatore **/
+            rollbackDb(strCustDb, LEAVE_OPEN);
+            rollbackDb(strCatDb, LEAVE_OPEN);
+            /** FINE IDMOD 00004 **/
+    return CODE_ERR;
+    }
+    
+    commitDb(strCatDb,LEAVE_OPEN);
+    commitDb(strCustDb,LEAVE_OPEN);
+    commitDb(strContDb,LEAVE_OPEN); /** IDMOD 00009: commit aggiornamento contabilizzatore **/
+
+    return CODE_OK;
+}
